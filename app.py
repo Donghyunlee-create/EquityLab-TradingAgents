@@ -3,7 +3,7 @@ from datetime import date
 
 import streamlit as st
 from analysis_service import run_stock_analysis
-
+from screener_service import discover_stocks
 # ---------------------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------------------
@@ -802,11 +802,221 @@ with tab_discover:
                 "Select at least one screening factor."
             )
 
-        else:
-            st.info(
-                "The discovery engine will be connected "
-                "after single-stock analysis works."
+        elif universe == "Custom watchlist":
+            st.warning(
+                "Custom watchlists will be added in a later step. "
+                "For now, select S&P 500, NASDAQ 100, or Dow Jones."
             )
+
+        else:
+            try:
+                with st.spinner(
+                    f"Screening {universe} across valuation, growth, "
+                    "quality, momentum and risk..."
+                ):
+                    discovery_result = discover_stocks(
+                        universe=universe,
+                        horizon=horizon,
+                        style=style,
+                        risk_tolerance=risk,
+                        enabled_factors={
+                            "valuation": factor_valuation,
+                            "growth": factor_growth,
+                            "quality": factor_quality,
+                            "momentum": factor_momentum,
+                            "risk": factor_risk,
+                        },
+                        top_n=10,
+                    )
+
+                st.session_state["discovery_result"] = discovery_result
+                st.session_state["discovery_error"] = None
+
+            except Exception as exc:
+                st.session_state["discovery_result"] = None
+                st.session_state["discovery_error"] = str(exc)
+
+
+    # ---------------------------------------------------------
+    # DISCOVERY RESULTS
+    # ---------------------------------------------------------
+
+    discovery_error = st.session_state.get(
+        "discovery_error"
+    )
+
+    discovery_result = st.session_state.get(
+        "discovery_result"
+    )
+
+    if discovery_error:
+        st.error(
+            "The stock screener could not complete the search."
+        )
+
+        with st.expander("Show error details"):
+            st.code(discovery_error)
+
+    if (
+        discovery_result is not None
+        and not discovery_result.empty
+    ):
+        st.success(
+            f"Found {len(discovery_result)} research candidates."
+        )
+
+        st.markdown("### Leading Candidates")
+
+        top_candidates = discovery_result.head(3)
+        candidate_columns = st.columns(len(top_candidates))
+
+        for column, (_, row) in zip(
+            candidate_columns,
+            top_candidates.iterrows(),
+        ):
+            sector_value = row.get("sector", "")
+            sector_text = (
+                sector_value
+                if isinstance(sector_value, str) and sector_value.strip()
+                else "Sector unavailable"
+            )
+
+            name_value = row.get("name", "")
+            company_name = (
+                name_value
+                if isinstance(name_value, str) and name_value.strip()
+                else row["symbol"]
+            )
+
+            with column:
+                card_html = (
+                    f'<div class="metric-card">'
+                    f'<div class="metric-label">'
+                    f'#{int(row["rank"])} · {sector_text}'
+                    f'</div>'
+                    f'<div class="metric-value">'
+                    f'{row["symbol"]}'
+                    f'</div>'
+                    f'<div style="color:#a1a1aa;'
+                    f'font-size:0.82rem;'
+                    f'margin-top:4px;'
+                    f'min-height:38px;">'
+                    f'{company_name}'
+                    f'</div>'
+                    f'<div style="margin-top:12px;'
+                    f'font-size:1.15rem;'
+                    f'font-weight:650;">'
+                    f'{row["quant_score"]:.1f}'
+                    f'<span style="color:#71717a;'
+                    f'font-size:0.72rem;'
+                    f'font-weight:400;">'
+                    f' / 100'
+                    f'</span>'
+                    f'</div>'
+                    f'</div>'
+                )
+
+                st.markdown(
+                    card_html,
+                    unsafe_allow_html=True,
+                )
+
+        st.write("")
+        st.markdown("### Factor Breakdown")
+
+        display_frame = discovery_result[
+            [
+                "rank",
+                "symbol",
+                "name",
+                "quant_score",
+                "valuation_score",
+                "growth_score",
+                "quality_score",
+                "momentum_score",
+                "risk_score",
+            ]
+        ].copy()
+
+        score_columns = [
+            "quant_score",
+            "valuation_score",
+            "growth_score",
+            "quality_score",
+            "momentum_score",
+            "risk_score",
+        ]
+
+        display_frame[score_columns] = (
+            display_frame[score_columns].round(1)
+        )
+
+        display_frame = display_frame.rename(
+            columns={
+                "rank": "Rank",
+                "symbol": "Ticker",
+                "name": "Company",
+                "quant_score": "Overall",
+                "valuation_score": "Valuation",
+                "growth_score": "Growth",
+                "quality_score": "Quality",
+                "momentum_score": "Momentum",
+                "risk_score": "Risk",
+            }
+        )
+
+        st.dataframe(
+            display_frame,
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "Rank": st.column_config.NumberColumn(
+                    width="small",
+                    format="%d",
+                ),
+                "Ticker": st.column_config.TextColumn(
+                    width="small",
+                ),
+                "Company": st.column_config.TextColumn(
+                    width="large",
+                ),
+                "Overall": st.column_config.ProgressColumn(
+                    min_value=0,
+                    max_value=100,
+                    format="%.1f",
+                ),
+                "Valuation": st.column_config.ProgressColumn(
+                    min_value=0,
+                    max_value=100,
+                    format="%.1f",
+                ),
+                "Growth": st.column_config.ProgressColumn(
+                    min_value=0,
+                    max_value=100,
+                    format="%.1f",
+                ),
+                "Quality": st.column_config.ProgressColumn(
+                    min_value=0,
+                    max_value=100,
+                    format="%.1f",
+                ),
+                "Momentum": st.column_config.ProgressColumn(
+                    min_value=0,
+                    max_value=100,
+                    format="%.1f",
+                ),
+                "Risk": st.column_config.ProgressColumn(
+                    min_value=0,
+                    max_value=100,
+                    format="%.1f",
+                ),
+            },
+        )
+
+        st.caption(
+            "Quant scores are screening signals, not investment recommendations. "
+            "The next stage will run TradingAgents on selected candidates."
+        )
 
 
 # =========================================================
