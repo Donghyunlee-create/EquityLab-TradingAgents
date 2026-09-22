@@ -1,9 +1,12 @@
 import os
+import html
 from datetime import date
 
 import streamlit as st
 from analysis_service import run_stock_analysis
+from valuation_service import analyze_valuation
 from screener_service import discover_stocks
+from discovery_analysis_service import analyze_discovery_candidates, discovery_summary_frame
 # ---------------------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------------------
@@ -442,232 +445,1018 @@ with tab_analyze:
 
 
 # ---------------------------------------------------------
-# ANALYSIS RESULT
+# ANALYSIS RESULT · EQUITYLAB RESEARCH VIEW
 # ---------------------------------------------------------
 
-analysis_error = st.session_state.get("analysis_error")
-analysis_result = st.session_state.get("analysis_result")
+    analysis_error = st.session_state.get("analysis_error")
+    analysis_result = st.session_state.get("analysis_result")
 
-if analysis_error:
-    st.error(
-        "The analysis could not be completed."
-    )
-
-    with st.expander("Show error details"):
-        st.code(analysis_error)
-
-
-if analysis_result:
-    st.success(
-        f"{analysis_result['ticker']} analysis completed."
-    )
-
-    r1, r2, r3 = st.columns(3)
-
-    with r1:
-        st.metric(
-            "Ticker",
-            analysis_result["ticker"],
+    if analysis_error:
+        st.error(
+            "The analysis could not be completed."
         )
 
-    with r2:
-        st.metric(
-            "Final Rating",
-            analysis_result["rating"],
+        with st.expander("Show error details"):
+            st.code(analysis_error)
+
+
+    if analysis_result:
+        analyzed_ticker = analysis_result["ticker"]
+
+        # -------------------------------------------------
+        # VALUATION ENGINE
+        # -------------------------------------------------
+
+        cached_valuation = st.session_state.get(
+            "valuation_result"
         )
 
-    with r3:
-        st.metric(
-            "Research Depth",
-            analysis_result["research_depth"],
+        cached_valuation_ticker = st.session_state.get(
+            "valuation_ticker"
         )
 
-    st.divider()
+        if (
+            cached_valuation is None
+            or cached_valuation_ticker
+            != analyzed_ticker
+        ):
+            try:
+                with st.spinner(
+                    f"Building live price map for "
+                    f"{analyzed_ticker}..."
+                ):
+                    cached_valuation = (
+                        analyze_valuation(
+                            analyzed_ticker
+                        )
+                    )
 
-    result_tabs = st.tabs(
-        [
-            "Overview",
-            "Fundamentals",
-            "Market",
-            "News",
-            "Sentiment",
-            "Bull vs Bear",
-            "Risk",
-        ]
-    )
+                st.session_state[
+                    "valuation_result"
+                ] = cached_valuation
 
-    # -----------------------------------------------------
-    # OVERVIEW
-    # -----------------------------------------------------
-    with result_tabs[0]:
-        st.subheader("Final Investment View")
+                st.session_state[
+                    "valuation_ticker"
+                ] = analyzed_ticker
 
-        final_decision = (
-            analysis_result.get("final_decision")
-            or analysis_result.get("investment_plan")
-            or "No final decision returned."
+                st.session_state[
+                    "valuation_error"
+                ] = None
+
+            except Exception as exc:
+                st.session_state[
+                    "valuation_result"
+                ] = None
+
+                st.session_state[
+                    "valuation_ticker"
+                ] = analyzed_ticker
+
+                st.session_state[
+                    "valuation_error"
+                ] = str(exc)
+
+        valuation = st.session_state.get(
+            "valuation_result"
         )
 
-        st.markdown(final_decision)
-
-        trader_plan = analysis_result.get("trader_plan")
-
-        if trader_plan:
-            st.subheader("Trader Plan")
-            st.markdown(trader_plan)
-
-        research_manager = analysis_result.get(
-            "research_manager"
+        valuation_error = st.session_state.get(
+            "valuation_error"
         )
 
-        if research_manager:
-            st.subheader("Research Manager")
-            st.markdown(research_manager)
 
-    # -----------------------------------------------------
-    # FUNDAMENTALS
-    # -----------------------------------------------------
-    with result_tabs[1]:
-        fundamentals = analysis_result.get(
-            "fundamentals_report"
-        )
+        # -------------------------------------------------
+        # DISPLAY HELPERS
+        # -------------------------------------------------
 
-        if fundamentals:
-            st.markdown(fundamentals)
-        else:
-            st.caption(
-                "Fundamentals analyst was not selected "
-                "or returned no report."
+        def _money(value):
+            if value is None:
+                return "—"
+
+            return (
+                f"${float(value):,.2f}"
             )
 
-    # -----------------------------------------------------
-    # MARKET
-    # -----------------------------------------------------
-    with result_tabs[2]:
-        market = analysis_result.get("market_report")
 
-        if market:
-            st.markdown(market)
-        else:
-            st.caption(
-                "Market analyst was not selected "
-                "or returned no report."
+        def _pct(value):
+            if value is None:
+                return "—"
+
+            return (
+                f"{float(value):+.1f}%"
             )
 
-    # -----------------------------------------------------
-    # NEWS
-    # -----------------------------------------------------
-    with result_tabs[3]:
-        news = analysis_result.get("news_report")
 
-        if news:
-            st.markdown(news)
-        else:
-            st.caption(
-                "News analyst was not selected "
-                "or returned no report."
+        def _range(low, high):
+            if (
+                low is None
+                or high is None
+            ):
+                return "—"
+
+            low_value = float(low)
+            high_value = float(high)
+
+            lower = min(
+                low_value,
+                high_value,
             )
 
-    # -----------------------------------------------------
-    # SENTIMENT
-    # -----------------------------------------------------
-    with result_tabs[4]:
-        sentiment = analysis_result.get(
-            "sentiment_report"
-        )
-
-        if sentiment:
-            st.markdown(sentiment)
-        else:
-            st.caption(
-                "Sentiment analyst was not selected "
-                "or returned no report."
+            upper = max(
+                low_value,
+                high_value,
             )
 
-    # -----------------------------------------------------
-    # BULL VS BEAR
-    # -----------------------------------------------------
-    with result_tabs[5]:
-        bull_col, bear_col = st.columns(2)
+            return (
+                f"{_money(lower)} – "
+                f"{_money(upper)}"
+            )
 
-        with bull_col:
-            st.subheader("Bull Case")
 
-            bull_case = analysis_result.get("bull_case")
+        def _plain_ai_text(value):
+            if not value:
+                return "No report returned."
 
-            if bull_case:
-                st.markdown(bull_case)
-            else:
-                st.caption("No bull case returned.")
+            text_value = str(value)
 
-        with bear_col:
-            st.subheader("Bear Case")
-
-            bear_case = analysis_result.get("bear_case")
-
-            if bear_case:
-                st.markdown(bear_case)
-            else:
-                st.caption("No bear case returned.")
-
-    # -----------------------------------------------------
-    # RISK
-    # -----------------------------------------------------
-    with result_tabs[6]:
-        st.subheader("Risk Manager")
-
-        risk_manager = analysis_result.get("risk_manager")
-
-        if risk_manager:
-            st.markdown(risk_manager)
-        else:
-            st.caption("No risk-manager report returned.")
-
-        with st.expander("Aggressive View"):
-            st.markdown(
-                analysis_result.get(
-                    "aggressive_risk_view"
+            for token in (
+                "###",
+                "##",
+                "#",
+                "**",
+                "__",
+                "`",
+            ):
+                text_value = (
+                    text_value.replace(
+                        token,
+                        "",
+                    )
                 )
-                or "No report."
+
+            lines = [
+                line.strip()
+                for line
+                in text_value.splitlines()
+            ]
+
+            return "\n".join(
+                line
+                for line in lines
+                if line
             )
 
-        with st.expander("Neutral View"):
-            st.markdown(
-                analysis_result.get(
-                    "neutral_risk_view"
+
+        def _fixed_text(value):
+            clean = _plain_ai_text(
+                value
+            )
+
+            safe = (
+                html.escape(clean)
+                .replace(
+                    "\n",
+                    "<br>",
                 )
-                or "No report."
             )
 
-        with st.expander("Conservative View"):
             st.markdown(
-                analysis_result.get(
-                    "conservative_risk_view"
-                )
-                or "No report."
+                (
+                    '<div class="research-body">'
+                    f'{safe}'
+                    '</div>'
+                ),
+                unsafe_allow_html=True,
             )
 
-            
-            
-            
 
-        
-            
-                
-                
-            
-            
-            
-        
-            
-                
-            
+        def _summary_card(
+            column,
+            label,
+            value,
+            note="",
+        ):
+            with column:
+                st.markdown(
+                    (
+                        '<div class="research-card">'
+                        '<div class="research-card-label">'
+                        f'{html.escape(str(label))}'
+                        '</div>'
+                        '<div class="research-card-value">'
+                        f'{html.escape(str(value))}'
+                        '</div>'
+                        '<div class="research-card-note">'
+                        f'{html.escape(str(note))}'
+                        '</div>'
+                        '</div>'
+                    ),
+                    unsafe_allow_html=True,
+                )
 
-    
-            
-            
-                
-            
+
+        # -------------------------------------------------
+        # RESEARCH UI STYLE
+        # -------------------------------------------------
+
+        st.markdown(
+            """
+            <style>
+
+            .research-card {
+                border:
+                    1px solid
+                    rgba(255,255,255,0.09);
+
+                background:
+                    rgba(255,255,255,0.028);
+
+                border-radius: 16px;
+                padding: 16px 18px;
+                min-height: 108px;
+            }
+
+            .research-card-label {
+                color: #8b93a7;
+                font-size: 12px;
+                font-weight: 600;
+                margin-bottom: 8px;
+            }
+
+            .research-card-value {
+                color: #f4f4f5;
+                font-size: 22px;
+                font-weight: 700;
+                line-height: 1.15;
+            }
+
+            .research-card-note {
+                color: #71717a;
+                font-size: 12px;
+                line-height: 1.4;
+                margin-top: 7px;
+            }
+
+            .research-body {
+                color: #d4d4d8;
+                font-size: 14px;
+                line-height: 1.72;
+                font-weight: 400;
+            }
+
+            .zone-title {
+                color: #f4f4f5;
+                font-size: 14px;
+                font-weight: 650;
+                margin-bottom: 10px;
+            }
+
+            .zone-row {
+                display: flex;
+                justify-content:
+                    space-between;
+                gap: 16px;
+
+                border-bottom:
+                    1px solid
+                    rgba(255,255,255,0.06);
+
+                padding: 9px 0;
+                font-size: 13px;
+            }
+
+            .zone-name {
+                color: #9ca3af;
+            }
+
+            .zone-value {
+                color: #f4f4f5;
+                font-weight: 650;
+                text-align: right;
+            }
+
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+        # -------------------------------------------------
+        # TOP SUMMARY
+        # -------------------------------------------------
+
+        st.success(
+            f"{analyzed_ticker} research completed."
+        )
+
+        if valuation:
+
+            current_price = valuation.get(
+                "current_price"
+            )
+
+            fair_value = valuation.get(
+                "fair_value"
+            )
+
+            fair_low = valuation.get(
+                "fair_value_low"
+            )
+
+            fair_high = valuation.get(
+                "fair_value_high"
+            )
+
+            top_cards = st.columns(4)
+
+            _summary_card(
+                top_cards[0],
+                "Current Price",
+                _money(current_price),
+                valuation.get(
+                    "quote_source",
+                    "",
+                ),
+            )
+
+            _summary_card(
+                top_cards[1],
+                "Base Fair Value",
+                _money(fair_value),
+                (
+                    "Confidence: "
+                    f"{valuation.get('valuation_confidence', '—')}"
+                ),
+            )
+
+            _summary_card(
+                top_cards[2],
+                "Fair Value Range",
+                _range(
+                    fair_low,
+                    fair_high,
+                ),
+                (
+                    "Status: "
+                    f"{valuation.get('valuation_status', '—')}"
+                ),
+            )
+
+            _summary_card(
+                top_cards[3],
+                "Model Upside / Downside",
+                _pct(
+                    valuation.get(
+                        "upside_downside_pct"
+                    )
+                ),
+                (
+                    "TradingAgents: "
+                    f"{analysis_result.get('rating', '—')}"
+                ),
+            )
+
+            st.write("")
+
+            second_cards = st.columns(4)
+
+            _summary_card(
+                second_cards[0],
+                "TradingAgents",
+                analysis_result.get(
+                    "rating",
+                    "—",
+                ),
+                "Multi-agent research signal",
+            )
+
+            _summary_card(
+                second_cards[1],
+                "Valuation",
+                valuation.get(
+                    "valuation_status",
+                    "—",
+                ),
+                (
+                    "Relative to model "
+                    "fair-value range"
+                ),
+            )
+
+            dispersion = valuation.get(
+                "model_dispersion_pct"
+            )
+
+            dispersion_note = (
+                (
+                    "DCF vs consensus dispersion "
+                    f"{dispersion:.1f}%"
+                )
+                if dispersion is not None
+                else
+                "Model dispersion unavailable"
+            )
+
+            _summary_card(
+                second_cards[2],
+                "Model Confidence",
+                valuation.get(
+                    "valuation_confidence",
+                    "—",
+                ),
+                dispersion_note,
+            )
+
+            _summary_card(
+                second_cards[3],
+                "Research Depth",
+                analysis_result.get(
+                    "research_depth",
+                    "—",
+                ),
+                (
+                    "Analysis date: "
+                    f"{analysis_result.get('analysis_date', '—')}"
+                ),
+            )
+
+
+            # -------------------------------------------------
+            # PRICE MAP
+            # -------------------------------------------------
+
+            st.divider()
+            st.markdown(
+                "### Price Map"
+            )
+
+            price_left, price_right = (
+                st.columns(2)
+            )
+
+            with price_left:
+
+                st.markdown(
+                    (
+                        '<div class="zone-title">'
+                        'Valuation Bands'
+                        '</div>'
+                    ),
+                    unsafe_allow_html=True,
+                )
+
+                valuation_rows = [
+                    (
+                        "Deep Value",
+                        (
+                            "≤ "
+                            + _money(
+                                valuation.get(
+                                    "deep_value_max"
+                                )
+                            )
+                            if valuation.get(
+                                "deep_value_max"
+                            ) is not None
+                            else "—"
+                        ),
+                    ),
+
+                    (
+                        "Undervalued",
+                        _range(
+                            valuation.get(
+                                "undervalued_min"
+                            ),
+                            valuation.get(
+                                "undervalued_max"
+                            ),
+                        ),
+                    ),
+
+                    (
+                        "Fair Value",
+                        _range(
+                            valuation.get(
+                                "fair_value_min"
+                            ),
+                            valuation.get(
+                                "fair_value_max"
+                            ),
+                        ),
+                    ),
+
+                    (
+                        "Expensive",
+                        _range(
+                            valuation.get(
+                                "expensive_min"
+                            ),
+                            valuation.get(
+                                "expensive_max"
+                            ),
+                        ),
+                    ),
+
+                    (
+                        "Rich",
+                        (
+                            "≥ "
+                            + _money(
+                                valuation.get(
+                                    "rich_min"
+                                )
+                            )
+                            if valuation.get(
+                                "rich_min"
+                            ) is not None
+                            else "—"
+                        ),
+                    ),
+                ]
+
+                for (
+                    label,
+                    value,
+                ) in valuation_rows:
+
+                    st.markdown(
+                        (
+                            '<div class="zone-row">'
+                            '<span class="zone-name">'
+                            f'{html.escape(label)}'
+                            '</span>'
+                            '<span class="zone-value">'
+                            f'{html.escape(value)}'
+                            '</span>'
+                            '</div>'
+                        ),
+                        unsafe_allow_html=True,
+                    )
+
+
+            with price_right:
+
+                st.markdown(
+                    (
+                        '<div class="zone-title">'
+                        'Execution Research Bands'
+                        '</div>'
+                    ),
+                    unsafe_allow_html=True,
+                )
+
+                execution_rows = [
+                    (
+                        "Valuation Entry",
+                        _range(
+                            valuation.get(
+                                "valuation_entry_zone_low"
+                            ),
+                            valuation.get(
+                                "valuation_entry_zone_high"
+                            ),
+                        ),
+                    ),
+
+                    (
+                        "Technical Support",
+                        _range(
+                            valuation.get(
+                                "technical_entry_zone_low"
+                            ),
+                            valuation.get(
+                                "technical_entry_zone_high"
+                            ),
+                        ),
+                    ),
+
+                    (
+                        "Convergent Entry",
+                        (
+                            _range(
+                                valuation.get(
+                                    "entry_zone_low"
+                                ),
+                                valuation.get(
+                                    "entry_zone_high"
+                                ),
+                            )
+                            if valuation.get(
+                                "entry_zone_status"
+                            )
+                            == "CONVERGENT"
+                            else
+                            "No convergence"
+                        ),
+                    ),
+
+                    (
+                        "Valuation Trim / Reassess",
+                        _range(
+                            valuation.get(
+                                "valuation_trim_zone_low"
+                            ),
+                            valuation.get(
+                                "valuation_trim_zone_high"
+                            ),
+                        ),
+                    ),
+
+                    (
+                        "Technical Resistance",
+                        _range(
+                            valuation.get(
+                                "technical_trim_zone_low"
+                            ),
+                            valuation.get(
+                                "technical_trim_zone_high"
+                            ),
+                        ),
+                    ),
+
+                    (
+                        "Convergent Trim / Reassess",
+                        (
+                            _range(
+                                valuation.get(
+                                    "trim_zone_low"
+                                ),
+                                valuation.get(
+                                    "trim_zone_high"
+                                ),
+                            )
+                            if valuation.get(
+                                "trim_zone_status"
+                            )
+                            == "CONVERGENT"
+                            else
+                            "No convergence"
+                        ),
+                    ),
+                ]
+
+                for (
+                    label,
+                    value,
+                ) in execution_rows:
+
+                    st.markdown(
+                        (
+                            '<div class="zone-row">'
+                            '<span class="zone-name">'
+                            f'{html.escape(label)}'
+                            '</span>'
+                            '<span class="zone-value">'
+                            f'{html.escape(value)}'
+                            '</span>'
+                            '</div>'
+                        ),
+                        unsafe_allow_html=True,
+                    )
+
+
+            if (
+                valuation.get(
+                    "entry_zone_status"
+                )
+                != "CONVERGENT"
+            ):
+                st.warning(
+                    "Valuation and technical support "
+                    "do not currently overlap. "
+                    "EquityLab therefore does not "
+                    "assign one precise entry band."
+                )
+
+
+            if (
+                valuation.get(
+                    "trim_zone_status"
+                )
+                != "CONVERGENT"
+            ):
+                st.info(
+                    "Valuation and technical resistance "
+                    "do not currently overlap for a "
+                    "single Trim / Reassess band."
+                )
+
+
+            st.caption(
+                "Price bands are model-based research "
+                "ranges, not automatic buy/sell "
+                "instructions. Yahoo Finance data "
+                "may be delayed."
+            )
+
+
+            # -------------------------------------------------
+            # TECHNICAL LEVELS
+            # -------------------------------------------------
+
+            st.divider()
+            st.markdown(
+                "### Technical Levels"
+            )
+
+            technical_cards = (
+                st.columns(4)
+            )
+
+            _summary_card(
+                technical_cards[0],
+                "MA 120",
+                _money(
+                    valuation.get(
+                        "ma120"
+                    )
+                ),
+                "Medium-term trend reference",
+            )
+
+            _summary_card(
+                technical_cards[1],
+                "MA 200",
+                _money(
+                    valuation.get(
+                        "ma200"
+                    )
+                ),
+                "Long-term trend reference",
+            )
+
+            _summary_card(
+                technical_cards[2],
+                "Support",
+                _range(
+                    valuation.get(
+                        "support_2"
+                    ),
+                    valuation.get(
+                        "support_1"
+                    ),
+                ),
+                "Recent price-distribution support",
+            )
+
+            _summary_card(
+                technical_cards[3],
+                "Resistance",
+                _range(
+                    valuation.get(
+                        "resistance_1"
+                    ),
+                    valuation.get(
+                        "resistance_2"
+                    ),
+                ),
+                "Recent price-distribution resistance",
+            )
+
+
+            # -------------------------------------------------
+            # MODEL DETAILS
+            # -------------------------------------------------
+
+            with st.expander(
+                "Valuation model details"
+            ):
+
+                model_cards = (
+                    st.columns(3)
+                )
+
+                discount_rate = (
+                    valuation.get(
+                        "discount_rate"
+                    )
+                )
+
+                _summary_card(
+                    model_cards[0],
+                    "DCF",
+                    _money(
+                        valuation.get(
+                            "dcf_fair_value"
+                        )
+                    ),
+                    (
+                        f"Discount rate "
+                        f"{discount_rate * 100:.1f}%"
+                        if discount_rate
+                        is not None
+                        else
+                        "Discount rate unavailable"
+                    ),
+                )
+
+                _summary_card(
+                    model_cards[1],
+                    "Analyst Consensus",
+                    _money(
+                        valuation.get(
+                            "analyst_target"
+                        )
+                    ),
+                    (
+                        "Yahoo Finance "
+                        "consensus field"
+                    ),
+                )
+
+                _summary_card(
+                    model_cards[2],
+                    "Fair Value Range",
+                    _range(
+                        valuation.get(
+                            "fair_value_low"
+                        ),
+                        valuation.get(
+                            "fair_value_high"
+                        ),
+                    ),
+                    (
+                        "Confidence: "
+                        f"{valuation.get('valuation_confidence', '—')}"
+                    ),
+                )
+
+                notes = (
+                    valuation.get(
+                        "notes"
+                    )
+                    or []
+                )
+
+                if notes:
+                    st.markdown(
+                        "##### Model notes"
+                    )
+
+                    for note in notes:
+                        st.caption(
+                            f"• {note}"
+                        )
+
+
+            st.caption(
+                (
+                    "Valuation generated: "
+                    f"{valuation.get('timestamp_utc', '—')} UTC"
+                )
+            )
+
+
+        elif valuation_error:
+
+            st.warning(
+                "TradingAgents completed, but "
+                "the valuation engine could not "
+                "build the live price map."
+            )
+
+            with st.expander(
+                "Valuation error details"
+            ):
+                st.code(
+                    valuation_error
+                )
+
+
+        # -------------------------------------------------
+        # FIXED-SIZE AI RESEARCH VIEW
+        # -------------------------------------------------
+
+        st.divider()
+
+        st.markdown(
+            "### Research View"
+        )
+
+        final_view = (
+            analysis_result.get(
+                "final_decision"
+            )
+            or analysis_result.get(
+                "investment_plan"
+            )
+            or analysis_result.get(
+                "trader_plan"
+            )
+            or
+            "No final research view returned."
+        )
+
+        _fixed_text(
+            final_view
+        )
+
+
+        # -------------------------------------------------
+        # DETAILED RESEARCH
+        # -------------------------------------------------
+
+        st.write("")
+
+        st.markdown(
+            "### Detailed Research"
+        )
+
+        detail_tabs = st.tabs(
+            [
+                "Fundamentals",
+                "Market",
+                "News",
+                "Sentiment",
+                "Bull / Bear",
+                "Risk",
+            ]
+        )
+
+
+        with detail_tabs[0]:
+            _fixed_text(
+                analysis_result.get(
+                    "fundamentals_report"
+                )
+            )
+
+
+        with detail_tabs[1]:
+            _fixed_text(
+                analysis_result.get(
+                    "market_report"
+                )
+            )
+
+
+        with detail_tabs[2]:
+            _fixed_text(
+                analysis_result.get(
+                    "news_report"
+                )
+            )
+
+
+        with detail_tabs[3]:
+            _fixed_text(
+                analysis_result.get(
+                    "sentiment_report"
+                )
+            )
+
+
+        with detail_tabs[4]:
+
+            bull_col, bear_col = (
+                st.columns(2)
+            )
+
+            with bull_col:
+                st.markdown(
+                    "##### Bull Case"
+                )
+
+                _fixed_text(
+                    analysis_result.get(
+                        "bull_case"
+                    )
+                )
+
+            with bear_col:
+                st.markdown(
+                    "##### Bear Case"
+                )
+
+                _fixed_text(
+                    analysis_result.get(
+                        "bear_case"
+                    )
+                )
+
+
+        with detail_tabs[5]:
+
+            st.markdown(
+                "##### Risk Manager"
+            )
+
+            _fixed_text(
+                analysis_result.get(
+                    "risk_manager"
+                )
+            )
+
+            with st.expander(
+                "Research Manager"
+            ):
+                _fixed_text(
+                    analysis_result.get(
+                        "research_manager"
+                    )
+                )
+
 
 
 # =========================================================
@@ -1017,6 +1806,239 @@ with tab_discover:
             "Quant scores are screening signals, not investment recommendations. "
             "The next stage will run TradingAgents on selected candidates."
         )
+
+
+        st.write("")
+        st.divider()
+
+        st.markdown("### TradingAgents Deep Research")
+
+        st.caption(
+            "The Quant Screener narrows the universe first. "
+            "TradingAgents can now perform multi-agent research "
+            "on the highest-ranked candidates."
+        )
+
+        deep_col1, deep_col2 = st.columns(2)
+
+        with deep_col1:
+            deep_top_k = st.selectbox(
+                "Candidates to analyze",
+                [1, 2, 3],
+                index=0,
+                format_func=lambda value: f"Top {value}",
+                key="discovery_deep_top_k",
+            )
+
+        with deep_col2:
+            deep_analysis_date = st.date_input(
+                "Deep analysis date",
+                value=date.today(),
+                key="discovery_deep_date",
+            )
+
+        run_deep_discovery = st.button(
+            "Run TradingAgents deep research",
+            type="primary",
+            width="stretch",
+            key="run_deep_discovery",
+        )
+
+        if run_deep_discovery:
+            try:
+                with st.spinner(
+                    f"TradingAgents is researching the top "
+                    f"{deep_top_k} candidate(s)..."
+                ):
+                    deep_results = analyze_discovery_candidates(
+                        discovery_result=discovery_result,
+                        analysis_date=deep_analysis_date,
+                        top_k=deep_top_k,
+                        research_depth="Shallow",
+                    )
+
+                st.session_state[
+                    "discovery_deep_results"
+                ] = deep_results
+
+                st.session_state[
+                    "discovery_deep_error"
+                ] = None
+
+            except Exception as exc:
+                st.session_state[
+                    "discovery_deep_results"
+                ] = None
+
+                st.session_state[
+                    "discovery_deep_error"
+                ] = str(exc)
+
+        deep_error = st.session_state.get(
+            "discovery_deep_error"
+        )
+
+        deep_results = st.session_state.get(
+            "discovery_deep_results"
+        )
+
+        if deep_error:
+            st.error(
+                "TradingAgents deep research could not be completed."
+            )
+
+            with st.expander("Show error details"):
+                st.code(deep_error)
+
+        if deep_results:
+            completed_count = sum(
+                1
+                for item in deep_results
+                if item.get("status") == "completed"
+            )
+
+            st.success(
+                f"Deep research completed for "
+                f"{completed_count} candidate(s)."
+            )
+
+            summary_frame = discovery_summary_frame(
+                deep_results
+            )
+
+            if not summary_frame.empty:
+                summary_frame[
+                    "Quant Score"
+                ] = summary_frame[
+                    "Quant Score"
+                ].round(1)
+
+                st.markdown(
+                    "#### Quant + TradingAgents Summary"
+                )
+
+                st.dataframe(
+                    summary_frame,
+                    hide_index=True,
+                    width="stretch",
+                )
+
+            st.markdown(
+                "#### Candidate Research"
+            )
+
+            for item in deep_results:
+                ticker = item.get(
+                    "ticker",
+                    "Unknown",
+                )
+
+                company = item.get(
+                    "company",
+                    ticker,
+                )
+
+                quant_score = item.get(
+                    "quant_score"
+                )
+
+                rating = (
+                    item.get("rating")
+                    or "No rating"
+                )
+
+                status = item.get(
+                    "status"
+                )
+
+                if status == "failed":
+                    with st.expander(
+                        f"{ticker} · Analysis failed"
+                    ):
+                        st.error(
+                            item.get("error")
+                            or "Unknown error."
+                        )
+
+                    continue
+
+                label = (
+                    f"{ticker} · {company} · "
+                    f"Quant {quant_score:.1f} · "
+                    f"{rating}"
+                )
+
+                with st.expander(
+                    label,
+                    expanded=False,
+                ):
+                    st.markdown(
+                        "##### Final Investment View"
+                    )
+
+                    final_view = (
+                        item.get(
+                            "final_decision"
+                        )
+                        or item.get(
+                            "investment_plan"
+                        )
+                        or "No final view returned."
+                    )
+
+                    st.markdown(
+                        final_view
+                    )
+
+                    research_manager = item.get(
+                        "research_manager"
+                    )
+
+                    if research_manager:
+                        st.markdown(
+                            "##### Research Manager"
+                        )
+                        st.markdown(
+                            research_manager
+                        )
+
+                    bull_col, bear_col = st.columns(
+                        2
+                    )
+
+                    with bull_col:
+                        st.markdown(
+                            "##### Bull Case"
+                        )
+                        st.markdown(
+                            item.get(
+                                "bull_case"
+                            )
+                            or "No bull case returned."
+                        )
+
+                    with bear_col:
+                        st.markdown(
+                            "##### Bear Case"
+                        )
+                        st.markdown(
+                            item.get(
+                                "bear_case"
+                            )
+                            or "No bear case returned."
+                        )
+
+                    risk_manager = item.get(
+                        "risk_manager"
+                    )
+
+                    if risk_manager:
+                        st.markdown(
+                            "##### Risk Manager"
+                        )
+                        st.markdown(
+                            risk_manager
+                        )
 
 
 # =========================================================
