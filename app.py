@@ -404,6 +404,11 @@ with tab_analyze:
         )
 
     if run_analysis:
+        # Refresh valuation cache for every new research run
+        st.session_state.pop("valuation_result", None)
+        st.session_state.pop("valuation_ticker", None)
+        st.session_state.pop("valuation_error", None)
+
         if not analyze_ticker:
             st.warning(
                 "Enter a ticker before running the analysis."
